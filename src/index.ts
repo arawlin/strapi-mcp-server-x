@@ -888,24 +888,67 @@ const STRAPI_VERSION_DIFFERENCES: StrapiVersionDifferences = {
 
 // Read config file
 const CONFIG_PATH = join(homedir(), '.mcp', 'strapi-mcp-server.config.json');
-let config: Record<string, { api_url: string, api_key: string, version?: string }>;
+type ServerConfig = { api_url: string, api_key: string, version?: string };
+
+function loadEnvConfig(): Record<string, ServerConfig> {
+    const apiUrl = process.env.STRAPI_API_URL?.trim();
+    const apiKey = process.env.STRAPI_API_KEY?.trim();
+    const version = process.env.STRAPI_VERSION?.trim();
+    const serverName = process.env.STRAPI_SERVER_NAME?.trim() || 'env';
+
+    if (!apiUrl && !apiKey && !version) {
+        return {};
+    }
+
+    if (!apiUrl || !apiKey) {
+        throw new McpError(
+            ErrorCode.InvalidParams,
+            'Environment configuration is incomplete. STRAPI_API_URL and STRAPI_API_KEY must both be set when using env-based configuration.'
+        );
+    }
+
+    return {
+        [serverName]: {
+            api_url: apiUrl,
+            api_key: apiKey,
+            ...(version ? { version } : {})
+        }
+    };
+}
+
+function loadFileConfig(): Record<string, ServerConfig> {
+    try {
+        const configContent = readFileSync(CONFIG_PATH, 'utf-8');
+        const parsedConfig = JSON.parse(configContent) as Record<string, ServerConfig>;
+
+        if (Object.keys(parsedConfig).length === 0) {
+            throw new McpError(ErrorCode.InvalidParams, 'Config file exists but is empty');
+        }
+
+        return parsedConfig;
+    } catch (error) {
+        return {};
+    }
+}
+
+let config: Record<string, ServerConfig> = {};
 
 try {
-    const configContent = readFileSync(CONFIG_PATH, 'utf-8');
-    config = JSON.parse(configContent);
+    const envConfig = loadEnvConfig();
+    const fileConfig = loadFileConfig();
 
-    if (Object.keys(config).length === 0) {
-        throw new McpError(ErrorCode.InvalidParams, 'Config file exists but is empty');
-    }
-    
+    config = {
+        ...fileConfig,
+        ...envConfig
+    };
+
     logger.info('Configuration loaded successfully', {
-        configPath: CONFIG_PATH,
         serverCount: Object.keys(config).length,
-        servers: Object.keys(config)
+        servers: Object.keys(config),
+        envServers: Object.keys(envConfig)
     });
 } catch (error) {
-    logger.error('Error reading config file', {
-        configPath: CONFIG_PATH,
+    logger.error('Error loading server configuration', {
         errorType: error instanceof Error ? error.constructor.name : typeof error
     }, error instanceof Error ? error : undefined);
     config = {};
@@ -937,16 +980,22 @@ function getServerConfig(serverName: string): { API_URL: string, JWT: string } {
         throw new McpError(
             ErrorCode.InvalidParams,
             `No server configuration found!\n\n` +
-            `Please create a configuration file at:\n` +
+            `Configure a server using one of these options:\n\n` +
+            `Option 1: Create a configuration file at:\n` +
             `${CONFIG_PATH}\n\n` +
             `Example configuration:\n` +
             `${JSON.stringify(exampleConfig, null, 2)}\n\n` +
-            `Steps to set up:\n` +
+            `File setup steps:\n` +
             `1. Create the .mcp directory: mkdir -p ~/.mcp\n` +
             `2. Create the config file: touch ~/.mcp/strapi-mcp-server.config.json\n` +
             `3. Add your server configuration using the example above\n` +
             `4. Get your JWT token from Strapi Admin Panel > Settings > API Tokens\n` +
-            `5. Make sure the file permissions are secure: chmod 600 ~/.mcp/strapi-mcp-server.config.json`
+            `5. Make sure the file permissions are secure: chmod 600 ~/.mcp/strapi-mcp-server.config.json\n\n` +
+            `Option 2: Set environment variables before starting the MCP server:\n` +
+            `STRAPI_API_URL=http://localhost:1337\n` +
+            `STRAPI_API_KEY=your-jwt-token-from-strapi-admin\n` +
+            `STRAPI_VERSION=5.*\n` +
+            `STRAPI_SERVER_NAME=env`
         );
     }
 
@@ -956,15 +1005,13 @@ function getServerConfig(serverName: string): { API_URL: string, JWT: string } {
             ErrorCode.InvalidParams,
             `Server "${serverName}" not found in config.\n\n` +
             `Available servers: ${Object.keys(config).join(', ')}\n\n` +
-            `To add a new server, edit:\n` +
+            `To add a new server, either edit:\n` +
             `${CONFIG_PATH}\n\n` +
-            `Example configuration:\n` +
-            `{\n` +
-            `  "${serverName}": {\n` +
-            `    "api_url": "http://localhost:1337",\n` +
-            `    "api_key": "your-jwt-token-from-strapi-admin"\n` +
-            `  }\n` +
-            `}`
+            `Or start the MCP server with:\n` +
+            `STRAPI_SERVER_NAME=${serverName}\n` +
+            `STRAPI_API_URL=http://localhost:1337\n` +
+            `STRAPI_API_KEY=your-jwt-token-from-strapi-admin\n` +
+            `STRAPI_VERSION=5.*`
         );
     }
     return {

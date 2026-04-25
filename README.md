@@ -69,6 +69,41 @@ Create a configuration file at `~/.mcp/strapi-mcp-server.config.json`:
 
 You can configure multiple Strapi instances by adding them to this file.
 
+### Environment Variable Configuration
+
+You can also provide a single Strapi server configuration through environment variables when starting the MCP server. This is useful for VS Code `mcp.json` `env` settings or other environments where you prefer not to manage a separate config file.
+
+Supported environment variables:
+
+- `STRAPI_API_URL` - required
+- `STRAPI_API_KEY` - required
+- `STRAPI_VERSION` - optional
+- `STRAPI_SERVER_NAME` - optional, defaults to `env`
+
+Example VS Code `mcp.json` configuration:
+
+```json
+{
+  "servers": {
+    "strapi": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "/absolute/path/to/strapi-mcp-server/build/index.js"
+      ],
+      "env": {
+        "STRAPI_SERVER_NAME": "production",
+        "STRAPI_API_URL": "https://cms.example.com",
+        "STRAPI_API_KEY": "your-strapi-token",
+        "STRAPI_VERSION": "5.*"
+      }
+    }
+  }
+}
+```
+
+If both the config file and environment variables are provided, environment-based servers are merged into the loaded configuration. If the same server name exists in both places, the environment-based values take precedence.
+
 ### Version Configuration
 
 The server now supports various version formats:
