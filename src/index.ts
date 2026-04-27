@@ -1307,6 +1307,28 @@ Typical reasons to call it:
                 name: "strapi_rest",
                 description: `Execute REST API requests against Strapi endpoints. IMPORTANT: All write operations (POST, PUT, DELETE) require explicit user authorization via the userAuthorized parameter.
 
+## Endpoint Rules
+- endpoint is path-only, for example: api/articles
+- NEVER put query strings in endpoint
+- ALWAYS pass filters, pagination, sorting, populate, and status=draft via params
+
+Bad:
+{
+    endpoint: 'api/articles?filters[slug][$eq]=example'
+}
+
+Good:
+{
+    endpoint: 'api/articles',
+    params: {
+        filters: {
+            slug: {
+                $eq: 'example'
+            }
+        }
+    }
+}
+
 ## Reading Data
 params: { populate: ['SEO'] } // Populate a component
 params: { populate: { SEO: { fields: ['Title', 'seoDescription'] } } } // With field selection
@@ -1376,7 +1398,7 @@ strapi_rest sends one HTTP request at a time. For multiple records, send one POS
                         },
                         endpoint: {
                             ...zodToJsonSchema(ToolSchemas.strapi_rest).properties.endpoint,
-                            description: "The API endpoint path (e.g., 'api/articles'). Do not include query strings here; use params instead."
+                            description: "The API endpoint path only (e.g., 'api/articles'). NEVER include query strings here. Pass filters, pagination, sorting, populate, and draft status via params."
                         },
                         method: {
                             ...zodToJsonSchema(ToolSchemas.strapi_rest).properties.method,
@@ -1385,7 +1407,7 @@ strapi_rest sends one HTTP request at a time. For multiple records, send one POS
                         },
                         params: {
                             ...zodToJsonSchema(ToolSchemas.strapi_rest).properties.params,
-                            description: "Optional query parameters appended to the request URL. For components, use populate: ['componentName'] or populate: { componentName: { fields: ['field1'] } }. For draft entity creation, use params: { status: 'draft' }."
+                            description: "Query parameters appended to the request URL. Use this field for filters, pagination, sorting, populate, and draft creation. Example: params: { filters: { slug: { $eq: 'example' } }, pagination: { pageSize: 100 } }. For draft entity creation, use params: { status: 'draft' }."
                         },
                         body: {
                             ...zodToJsonSchema(ToolSchemas.strapi_rest).properties.body,
