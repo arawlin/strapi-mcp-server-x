@@ -1530,8 +1530,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                         type: "text",
                         text: JSON.stringify({
                             servers,
-                            config_path: CONFIG_PATH,
-                            help: "To add more servers, edit the configuration file at the path shown above.",
                             version_differences: STRAPI_VERSION_DIFFERENCES,
                             user_action_required: {
                                 message: "Please specify which server you want to work with by providing the server name in your next command.",
