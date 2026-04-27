@@ -190,10 +190,12 @@ strapi_rest({
   server: "myserver",
   endpoint: "api/articles",
   method: "POST",
+  params: {
+    status: "draft",
+  },
   body: {
     data: {
       title: "Draft Article",
-      status: "draft",
     },
   },
   userAuthorized: true,

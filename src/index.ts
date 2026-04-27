@@ -1328,8 +1328,22 @@ Write example:
 }
 
                                 ## Draft Pattern
-                                Use this draft payload pattern:
-                                - body: { data: { status: 'draft' } }
+                                                                Create draft entities by passing status=draft in params.
+
+                                                                Example:
+                                                                {
+                                                                    method: 'POST',
+                                                                    endpoint: 'api/tags',
+                                                                    params: {
+                                                                        status: 'draft'
+                                                                    },
+                                                                    body: {
+                                                                        data: {
+                                                                            name: 'Wallet Security'
+                                                                        }
+                                                                    },
+                                                                    userAuthorized: true
+                                                                }
 
 ## Multiple Record Writes
 strapi_rest sends one HTTP request at a time. For multiple records, send one POST per record.
@@ -1364,11 +1378,11 @@ strapi_rest sends one HTTP request at a time. For multiple records, send one POS
                         },
                         params: {
                             ...zodToJsonSchema(ToolSchemas.strapi_rest).properties.params,
-                            description: "Optional query parameters for GET requests. For components, use populate: ['componentName'] or populate: { componentName: { fields: ['field1'] } }"
+                            description: "Optional query parameters appended to the request URL. For components, use populate: ['componentName'] or populate: { componentName: { fields: ['field1'] } }. For draft entity creation, use params: { status: 'draft' }."
                         },
                         body: {
                             ...zodToJsonSchema(ToolSchemas.strapi_rest).properties.body,
-                            description: "Request body for POST/PUT requests. For components, use: { data: { componentName: { field: 'value' } } } for single components or { data: { componentName: [{ field: 'value' }] } } for repeatable components. Use { data: { status: 'draft' } } for draft writes."
+                            description: "Request body for POST/PUT requests. For components, use: { data: { componentName: { field: 'value' } } } for single components or { data: { componentName: [{ field: 'value' }] } } for repeatable components."
                         },
                         userAuthorized: {
                             ...zodToJsonSchema(ToolSchemas.strapi_rest).properties.userAuthorized,
