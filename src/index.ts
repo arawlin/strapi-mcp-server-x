@@ -1015,9 +1015,24 @@ function getServerConfig(serverName: string): { API_URL: string, JWT: string } {
         );
     }
     return {
-        API_URL: serverConfig.api_url,
+        API_URL: normalizeApiUrl(serverConfig.api_url),
         JWT: serverConfig.api_key
     };
+}
+
+function normalizeApiUrl(apiUrl: string): string {
+    return apiUrl.trim().replace(/\/+$/, '');
+}
+
+function normalizeEndpoint(endpoint: string): string {
+    return endpoint.trim().replace(/^\/+/, '');
+}
+
+function buildApiUrl(apiUrl: string, endpoint: string): string {
+    const normalizedApiUrl = normalizeApiUrl(apiUrl);
+    const normalizedEndpoint = normalizeEndpoint(endpoint);
+
+    return normalizedEndpoint ? `${normalizedApiUrl}/${normalizedEndpoint}` : normalizedApiUrl;
 }
 
 
@@ -1029,7 +1044,7 @@ async function makeStrapiRequest(
     requestId?: string
 ): Promise<any> {
     const serverConfig = getServerConfig(serverName);
-    let url = `${serverConfig.API_URL}${endpoint}`;
+    let url = buildApiUrl(serverConfig.API_URL, endpoint);
     if (params) {
         const queryString = new URLSearchParams(params).toString();
         url = `${url}?${queryString}`;
@@ -1149,7 +1164,7 @@ async function uploadMedia(serverName: string, imageBuffer: Buffer, fileName: st
         formData.append('fileInfo', JSON.stringify(metadata));
     }
 
-    const url = `${serverConfig.API_URL}/api/upload`;
+    const url = buildApiUrl(serverConfig.API_URL, 'api/upload');
     const startTime = Date.now();
     
     logger.debug(`Uploading media to Strapi`, {
@@ -1733,7 +1748,7 @@ async function makeRestRequest(
     }
 
     const serverConfig = getServerConfig(serverName);
-    let url = `${serverConfig.API_URL}/${endpoint}`;
+    let url = buildApiUrl(serverConfig.API_URL, endpoint);
 
     // Parse query parameters if provided
     if (params) {
