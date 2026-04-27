@@ -282,7 +282,7 @@ The server implements a strict write protection policy:
 
 ## Best Practices
 
-1. Always check schema first with `strapi_get_content_types`
+1. Call `strapi_get_content_types` or `strapi_get_components` only when you explicitly need schema details, component definitions, or unknown endpoint/field names
 2. Use proper plural/singular forms for endpoints
 3. Include error handling in your queries
 4. Validate URLs before upload

@@ -1216,7 +1216,7 @@ Supports both Strapi v4 and v5 with automatic version detection.
 - 400: Missing data wrapper in request body
 
 ### Best Practices
-1. Always check schema first with strapi_get_content_types
+1. Call strapi_get_content_types only when the user explicitly asks for schema/components info, or when the content structure/endpoints are unknown
 2. Use documentId (not numeric id) for Strapi v5
 3. Always use data wrapper for updates: { data: { field: value } }
 4. Use pluralName for collection endpoints (api/articles)
@@ -1227,13 +1227,13 @@ Supports both Strapi v4 and v5 with automatic version detection.
                 name: "strapi_get_content_types",
                 description: `Get all content types from Strapi. Returns the complete schema of all content types.
 
-## Initialization Steps (ALWAYS DO FIRST)
-1. Get schema and analyze with this tool
-2. Capture Content Types and structures
-3. Remember endpoint names (pluralName/singularName)
-4. Document fields and types
-5. Identify relations
-6. Consider required fields and validations
+## Use This Tool Only When Needed
+Call this tool only when the user explicitly asks for content type schema, or when endpoint names, fields, relations, or required validations are unknown.
+
+Typical reasons to call it:
+1. Confirm pluralName or singularName before building an endpoint
+2. Inspect available fields and required validations
+3. Check relation or component structure before writing new data
 
 ## Schema Conventions
 - singularName: Used for single item queries (e.g., "article")
@@ -1259,7 +1259,7 @@ Supports both Strapi v4 and v5 with automatic version detection.
             },
             {
                 name: "strapi_get_components",
-                description: "Get all components from Strapi with pagination support. Returns both component data and pagination metadata (page, pageSize, total, pageCount).",
+                description: "Get all components from Strapi with pagination support. Returns both component data and pagination metadata (page, pageSize, total, pageCount). Call this tool only when the user explicitly asks for component schema/details, or when component structure is unknown.",
                 inputSchema: {
                     ...zodToJsonSchema(ToolSchemas.strapi_get_components),
                     properties: {
