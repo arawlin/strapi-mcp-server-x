@@ -1198,6 +1198,11 @@ STRICT_USER_AUTHORIZATION_REQUIRED: No write operations without explicit user au
 Protected operations: POST (Create), PUT (Update), DELETE (Delete), Media Upload.
 All write operations require userAuthorized: true parameter.
 
+## Configuration Resolution
+- Config file path: ~/.mcp/strapi-mcp-server.config.json
+- File-based and env-based server definitions are merged at startup
+- If the same server name exists in both places, env values override file values
+
 ## Strapi Version Support
 Supports both Strapi v4 and v5 with automatic version detection.
 
@@ -1295,6 +1300,25 @@ body: {
   }
 }
 
+Write example:
+{
+    method: 'POST',
+    endpoint: 'api/articles',
+    body: {
+        data: {
+            title: 'New Article'
+        }
+    },
+    userAuthorized: true
+}
+
+                                ## Draft Pattern
+                                Use this draft payload pattern:
+                                - body: { data: { status: 'draft' } }
+
+## Multiple Record Writes
+strapi_rest sends one HTTP request at a time. For multiple records, send one POST per record unless your Strapi project exposes a custom bulk endpoint.
+
 ## Debugging Guide
 - 404 Error: Check plural/singular form, use documentId not numeric id
 - 400 Error: Check if data wrapper is present in body
@@ -1329,7 +1353,7 @@ body: {
                         },
                         body: {
                             ...zodToJsonSchema(ToolSchemas.strapi_rest).properties.body,
-                            description: "Request body for POST/PUT requests. For components, use: { data: { componentName: { field: 'value' } } } for single components or { data: { componentName: [{ field: 'value' }] } } for repeatable components"
+                            description: "Request body for POST/PUT requests. For components, use: { data: { componentName: { field: 'value' } } } for single components or { data: { componentName: [{ field: 'value' }] } } for repeatable components. Use { data: { status: 'draft' } } for draft writes."
                         },
                         userAuthorized: {
                             ...zodToJsonSchema(ToolSchemas.strapi_rest).properties.userAuthorized,

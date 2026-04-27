@@ -69,6 +69,12 @@ Create a configuration file at `~/.mcp/strapi-mcp-server.config.json`:
 
 You can configure multiple Strapi instances by adding them to this file.
 
+Configuration resolution rules:
+
+- The config file path is `~/.mcp/strapi-mcp-server.config.json`
+- File-based and environment-based server definitions are merged at startup
+- If the same server name exists in both places, environment values override file values
+
 ### Environment Variable Configuration
 
 You can also provide a single Strapi server configuration through environment variables when starting the MCP server. This is useful for VS Code `mcp.json` `env` settings or other environments where you prefer not to manage a separate config file.
@@ -176,6 +182,21 @@ strapi_rest({
       category: "news",
     },
   },
+  userAuthorized: true,
+});
+
+// Create draft content
+strapi_rest({
+  server: "myserver",
+  endpoint: "api/articles",
+  method: "POST",
+  body: {
+    data: {
+      title: "Draft Article",
+      status: "draft",
+    },
+  },
+  userAuthorized: true,
 });
 
 // Update content
@@ -189,6 +210,7 @@ strapi_rest({
       content: "Updated content",
     },
   },
+  userAuthorized: true,
 });
 
 // Delete content
@@ -196,8 +218,15 @@ strapi_rest({
   server: "myserver",
   endpoint: "api/articles/123",
   method: "DELETE",
+  userAuthorized: true,
 });
 ```
+
+Write-operation notes:
+
+- `userAuthorized: true` is required for every POST, PUT, DELETE, and media upload request
+- `strapi_rest` sends one HTTP request at a time; if you need to create many records, send one POST per record unless your Strapi project exposes a custom bulk endpoint
+- For Strapi v5, prefer `documentId` over numeric IDs when updating or deleting existing entries
 
 ### Media Upload
 
