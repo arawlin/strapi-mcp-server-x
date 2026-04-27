@@ -1317,7 +1317,7 @@ Write example:
                                 - body: { data: { status: 'draft' } }
 
 ## Multiple Record Writes
-strapi_rest sends one HTTP request at a time. For multiple records, send one POST per record unless your Strapi project exposes a custom bulk endpoint.
+strapi_rest sends one HTTP request at a time. For multiple records, send one POST per record.
 
 ## Debugging Guide
 - 404 Error: Check plural/singular form, use documentId not numeric id
