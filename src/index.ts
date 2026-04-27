@@ -498,7 +498,14 @@ const GetComponentsSchema = z.object({
 // Schema for strapi_rest tool
 const RestSchema = z.object({
     server: z.string().min(1, "Server name is required and cannot be empty"),
-    endpoint: z.string().min(1, "Endpoint is required and cannot be empty"),
+    endpoint: z.string()
+        .min(1, "Endpoint is required and cannot be empty")
+        .refine(
+            (value) => !value.includes('?'),
+            {
+                message: "Endpoint must not include query strings. Pass query parameters via params."
+            }
+        ),
     method: z.enum(["GET", "POST", "PUT", "DELETE"], {
         error: "Method must be one of: GET, POST, PUT, DELETE"
     }).optional().default("GET"),
@@ -1369,7 +1376,7 @@ strapi_rest sends one HTTP request at a time. For multiple records, send one POS
                         },
                         endpoint: {
                             ...zodToJsonSchema(ToolSchemas.strapi_rest).properties.endpoint,
-                            description: "The API endpoint (e.g., 'api/articles')"
+                            description: "The API endpoint path (e.g., 'api/articles'). Do not include query strings here; use params instead."
                         },
                         method: {
                             ...zodToJsonSchema(ToolSchemas.strapi_rest).properties.method,
@@ -1756,6 +1763,13 @@ async function makeRestRequest(
             `3. Receive clear confirmation from the user\n` +
             `4. Set userAuthorized=true when making the request\n\n` +
             `This is a security measure to prevent unauthorized data modifications.`
+        );
+    }
+
+    if (endpoint.includes('?')) {
+        throw new McpError(
+            ErrorCode.InvalidParams,
+            "Endpoint must not include query strings. Pass query parameters via params."
         );
     }
 
