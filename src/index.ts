@@ -532,7 +532,7 @@ const RestSchema = z.object({
             } catch (e) {
                 ctx.addIssue({
                     code: "custom",
-                    message: "Body must be a valid JSON object or object"
+                    message: "Body must be either a JSON object or a JSON string that parses to an object. File-path shortcuts like '@/tmp/payload.json' are not supported."
                 });
                 return z.NEVER;
             }
@@ -1613,6 +1613,32 @@ body: {
   }
 }
 
+## Request Body Input Rules (CRITICAL)
+- body accepts only:
+    - a JSON object (recommended)
+    - a JSON string that parses to an object
+- body does NOT accept file path pointers such as '@/tmp/payload.json' or './payload.json'
+- If body data is stored in a file, read the file content first and pass parsed JSON
+
+Invalid body example:
+{
+        body: '@/tmp/payload.json'
+}
+
+Valid body example (object):
+{
+        body: {
+                data: {
+                        title: 'Example Title'
+                }
+        }
+}
+
+Valid body example (JSON string):
+{
+        body: '{"data":{"title":"Example Title"}}'
+}
+
 Write example:
 {
     method: 'POST',
@@ -1680,7 +1706,7 @@ strapi_rest sends one HTTP request at a time. For multiple records, send one POS
                         },
                         body: {
                             ...zodToJsonSchema(ToolSchemas.strapi_rest).properties.body,
-                            description: "Request body for POST/PUT requests. For components, use: { data: { componentName: { field: 'value' } } } for single components or { data: { componentName: [{ field: 'value' }] } } for repeatable components."
+                            description: "Request body for POST/PUT requests. Accepted types: (1) object, or (2) JSON string that parses to an object. Not supported: file-path pointers such as '@/tmp/payload.json'. If body data is in a file, read the file content and pass parsed JSON. For components, use: { data: { componentName: { field: 'value' } } } for single components or { data: { componentName: [{ field: 'value' }] } } for repeatable components."
                         },
                         userAuthorized: {
                             ...zodToJsonSchema(ToolSchemas.strapi_rest).properties.userAuthorized,
