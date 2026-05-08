@@ -47,8 +47,9 @@ import fetch, { Response, RequestInit } from 'node-fetch';
 import FormData from 'form-data';
 import sharp from 'sharp';
 import { readFileSync } from 'fs';
+import { readFile, stat } from 'fs/promises';
 import { homedir } from 'os';
-import { join } from 'path';
+import { basename, extname, join } from 'path';
 import qs from 'qs';
 import { z } from 'zod';
 import { randomUUID } from 'crypto';
@@ -574,7 +575,8 @@ const MediaMetadataSchema = z.object({
 // Schema for strapi_upload_media tool
 const UploadMediaSchema = z.object({
     server: z.string().min(1, "Server name is required and cannot be empty"),
-    url: z.url({ error: "Must be a valid URL" }),
+    url: z.url({ error: "Must be a valid URL" }).optional(),
+    localPath: z.string().trim().min(1, "localPath cannot be empty").optional(),
     format: z.enum(["jpeg", "png", "webp", "original"], {
         error: "Format must be one of: jpeg, png, webp, original"
     }).optional().default("original"),
@@ -605,19 +607,32 @@ const UploadMediaSchema = z.object({
             return z.NEVER;
         })
     ]).optional().default(false)
-}).strict().refine(
-    (data) => {
-        // Media upload requires explicit user authorization
-        if (!data.userAuthorized) {
-            return false;
-        }
-        return true;
-    },
-    {
-        message: "Media upload operations require explicit user authorization (userAuthorized: true)",
-        path: ["userAuthorized"]
+}).strict().superRefine((data, ctx) => {
+    const hasUrl = typeof data.url === 'string';
+    const hasLocalPath = typeof data.localPath === 'string';
+
+    if (hasUrl === hasLocalPath) {
+        const message = "Provide exactly one source: either url or localPath";
+        ctx.addIssue({
+            code: "custom",
+            message,
+            path: ["url"]
+        });
+        ctx.addIssue({
+            code: "custom",
+            message,
+            path: ["localPath"]
+        });
     }
-);
+
+    if (!data.userAuthorized) {
+        ctx.addIssue({
+            code: "custom",
+            message: "Media upload operations require explicit user authorization (userAuthorized: true)",
+            path: ["userAuthorized"]
+        });
+    }
+});
 
 // Collection of all schemas for easy access
 const ToolSchemas = {
@@ -673,65 +688,172 @@ function validateToolInput<T extends keyof typeof ToolSchemas>(
 }
 
 // Helper to safely access Zod internal definition (compatible with v3 and v4)
-function getZodDef(zodType: z.ZodTypeAny): any {
+function getZodDef(zodType: any): any {
     // Zod v4 uses _zod.def, Zod v3 uses _def
     const type = zodType as any;
     return type._zod?.def ?? type._def ?? {};
 }
 
+function getZodDefType(zodType: z.ZodTypeAny): string | undefined {
+    const def = getZodDef(zodType);
+    return def.type ?? def.typeName;
+}
+
+function getCheckDef(check: any): any {
+    return getZodDef(check);
+}
+
 // Helper function to convert a single Zod type to JSON Schema type
 function zodTypeToJsonSchema(zodType: z.ZodTypeAny): any {
     const def = getZodDef(zodType);
+    const defType = getZodDefType(zodType);
 
-    // Unwrap effects (transforms) to get the input type
+    // Unwrap transform wrappers to publish the expected input schema
+    if (defType === 'pipe') {
+        const inputSchema = def.in ?? def.innerType;
+        if (inputSchema) {
+            return zodTypeToJsonSchema(inputSchema);
+        }
+    }
+
+    // Legacy support for older Zod effects wrappers
     if (def.typeName === 'ZodEffects' || (zodType as any)._zod?.typeName === 'ZodEffects') {
-        const innerSchema = def.schema ?? def.innerType;
+        const innerSchema = def.schema ?? def.innerType ?? def.in;
         if (innerSchema) {
             return zodTypeToJsonSchema(innerSchema);
         }
     }
 
-    if (zodType instanceof z.ZodString) {
+    if (zodType instanceof z.ZodUnion || defType === 'union') {
+        return unionToJsonSchema(zodType);
+    }
+
+    if (zodType instanceof z.ZodString || defType === 'string') {
         const schema: any = { type: "string" };
         const checks = def.checks ?? [];
-        if (checks.some((check: any) => check.kind === 'min' && check.value > 0)) {
-            schema.minLength = 1;
+
+        for (const check of checks) {
+            const checkDef = getCheckDef(check);
+
+            if (checkDef.kind === 'min' && typeof checkDef.value === 'number') {
+                schema.minLength = checkDef.value;
+            }
+            if (checkDef.check === 'min_length' && typeof checkDef.minimum === 'number') {
+                schema.minLength = checkDef.minimum;
+            }
+            if (checkDef.kind === 'max' && typeof checkDef.value === 'number') {
+                schema.maxLength = checkDef.value;
+            }
+            if (checkDef.check === 'max_length' && typeof checkDef.maximum === 'number') {
+                schema.maxLength = checkDef.maximum;
+            }
+
+            const isUrlFormat =
+                checkDef.kind === 'url' ||
+                (checkDef.check === 'string_format' && (checkDef.format === 'url' || checkDef.format === 'uri')) ||
+                checkDef.format === 'url' ||
+                checkDef.format === 'uri';
+
+            if (isUrlFormat) {
+                schema.format = "uri";
+            }
         }
+
+        if (def.format === 'url' || def.format === 'uri') {
+            schema.format = "uri";
+        }
+
         return schema;
     }
-    if (zodType instanceof z.ZodNumber) {
+
+    if (zodType instanceof z.ZodNumber || defType === 'number') {
         const schema: any = { type: "number" };
         const checks = def.checks ?? [];
+
         for (const check of checks) {
-            if (check.kind === 'min') schema.minimum = check.value;
-            if (check.kind === 'max') schema.maximum = check.value;
-            if (check.kind === 'int') schema.type = "integer";
+            const checkDef = getCheckDef(check);
+
+            if (checkDef.kind === 'min' && typeof checkDef.value === 'number') {
+                schema.minimum = checkDef.value;
+            }
+            if (checkDef.kind === 'max' && typeof checkDef.value === 'number') {
+                schema.maximum = checkDef.value;
+            }
+            if (checkDef.kind === 'int') {
+                schema.type = "integer";
+            }
+
+            if (checkDef.check === 'greater_than' && typeof checkDef.value === 'number') {
+                if (checkDef.inclusive) {
+                    schema.minimum = checkDef.value;
+                } else {
+                    schema.exclusiveMinimum = checkDef.value;
+                }
+            }
+            if (checkDef.check === 'less_than' && typeof checkDef.value === 'number') {
+                if (checkDef.inclusive) {
+                    schema.maximum = checkDef.value;
+                } else {
+                    schema.exclusiveMaximum = checkDef.value;
+                }
+            }
+            if (checkDef.check === 'multiple_of' && typeof checkDef.value === 'number') {
+                schema.multipleOf = checkDef.value;
+            }
+
+            if (checkDef.check === 'number_format' && typeof checkDef.format === 'string') {
+                if (checkDef.format.toLowerCase().includes('int')) {
+                    schema.type = "integer";
+                }
+            }
         }
+
         return schema;
     }
-    if (zodType instanceof z.ZodBoolean) {
+
+    if (zodType instanceof z.ZodBoolean || defType === 'boolean') {
         return { type: "boolean" };
     }
-    if (zodType instanceof z.ZodEnum) {
+
+    if (zodType instanceof z.ZodEnum || defType === 'enum') {
         // Zod v4: entries, Zod v3: values
         const values = def.entries ? Object.keys(def.entries) : def.values;
         return { type: "string", enum: values };
     }
-    if (zodType instanceof z.ZodRecord) {
+
+    if (defType === 'literal') {
+        const literalType = typeof def.value;
+        return {
+            type: literalType === 'number' || literalType === 'boolean' || literalType === 'string' ? literalType : undefined,
+            const: def.value
+        };
+    }
+
+    if (zodType instanceof z.ZodRecord || defType === 'record') {
         return { type: "object", additionalProperties: true };
     }
-    if (zodType instanceof z.ZodObject) {
+
+    if (zodType instanceof z.ZodObject || defType === 'object') {
         return { type: "object", additionalProperties: true };
+    }
+
+    if (defType === 'array') {
+        return { type: "array" };
     }
 
     return { type: "object", additionalProperties: true };
 }
 
 // Helper function to process union types into JSON Schema oneOf
-function unionToJsonSchema(unionType: z.ZodUnion<any>): any {
+function unionToJsonSchema(unionType: z.ZodTypeAny): any {
     const def = getZodDef(unionType);
     const options = (def.options ?? []) as z.ZodTypeAny[];
-    const schemas = options.map(opt => zodTypeToJsonSchema(opt));
+
+    if (!Array.isArray(options) || options.length === 0) {
+        return { type: "object", additionalProperties: true };
+    }
+
+    const schemas = options.map(opt => zodTypeToJsonSchema(unwrapZodType(opt)));
 
     // Deduplicate schemas by type
     const uniqueSchemas: any[] = [];
@@ -745,6 +867,11 @@ function unionToJsonSchema(unionType: z.ZodUnion<any>): any {
         }
     }
 
+    const collapsedSchema = collapseSimpleUnionSchemas(uniqueSchemas);
+    if (collapsedSchema) {
+        return collapsedSchema;
+    }
+
     // If only one unique schema, return it directly
     if (uniqueSchemas.length === 1) {
         return uniqueSchemas[0];
@@ -753,15 +880,81 @@ function unionToJsonSchema(unionType: z.ZodUnion<any>): any {
     return { oneOf: uniqueSchemas };
 }
 
+function collapseSimpleUnionSchemas(schemas: any[]): any | null {
+    if (!Array.isArray(schemas) || schemas.length === 0) {
+        return null;
+    }
+
+    const typeCounts = new Map<string, number>();
+
+    for (const schema of schemas) {
+        if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
+            return null;
+        }
+
+        if (schema.oneOf || schema.anyOf || schema.allOf || schema.$ref || typeof schema.type !== 'string') {
+            return null;
+        }
+
+        typeCounts.set(schema.type, (typeCounts.get(schema.type) ?? 0) + 1);
+    }
+
+    for (const count of typeCounts.values()) {
+        if (count > 1) {
+            return null;
+        }
+    }
+
+    const merged: any = {};
+    const otherKeys = new Set<string>();
+
+    for (const schema of schemas) {
+        for (const key of Object.keys(schema)) {
+            if (key !== 'type') {
+                otherKeys.add(key);
+            }
+        }
+    }
+
+    for (const key of otherKeys) {
+        const values = schemas
+            .filter(schema => key in schema)
+            .map(schema => JSON.stringify(schema[key]));
+
+        if (values.length === 0) {
+            continue;
+        }
+
+        const distinctValues = [...new Set(values)];
+        if (distinctValues.length > 1) {
+            return null;
+        }
+
+        merged[key] = JSON.parse(distinctValues[0]);
+    }
+
+    const types = [...typeCounts.keys()];
+    merged.type = types.length === 1 ? types[0] : types;
+
+    return merged;
+}
+
 // Helper function to unwrap nested Zod types (Optional, Default, etc.)
 function unwrapZodType(zodType: z.ZodTypeAny): z.ZodTypeAny {
     const def = getZodDef(zodType);
-    if (zodType instanceof z.ZodOptional) {
+
+    if (zodType instanceof z.ZodOptional || def.type === 'optional') {
         return unwrapZodType(def.innerType);
     }
-    if (zodType instanceof z.ZodDefault) {
+
+    if (zodType instanceof z.ZodDefault || def.type === 'default') {
         return unwrapZodType(def.innerType);
     }
+
+    if (def.type === 'pipe' && def.in) {
+        return unwrapZodType(def.in);
+    }
+
     return zodType;
 }
 
@@ -777,16 +970,19 @@ function zodToJsonSchema(schema: z.ZodSchema): any {
             const unwrapped = unwrapZodType(zodValue);
 
             // Check if it's a union type (after unwrapping Optional/Default)
-            if (unwrapped instanceof z.ZodUnion) {
+            if (unwrapped instanceof z.ZodUnion || getZodDef(unwrapped).type === 'union') {
                 properties[key] = unionToJsonSchema(unwrapped);
             } else {
                 properties[key] = zodTypeToJsonSchema(unwrapped);
             }
 
             // Only mark as required if not optional and not having a default
-            const isOptional = zodValue instanceof z.ZodOptional ||
-                              zodValue instanceof z.ZodDefault ||
-                              (zodValue instanceof z.ZodOptional && zodValue._def.innerType instanceof z.ZodDefault);
+            const valueDef = getZodDef(zodValue);
+            const isOptional =
+                zodValue instanceof z.ZodOptional ||
+                zodValue instanceof z.ZodDefault ||
+                valueDef.type === 'optional' ||
+                valueDef.type === 'default';
 
             if (!isOptional) {
                 required.push(key);
@@ -1103,41 +1299,114 @@ async function makeStrapiRequest(
     }
 }
 
-// Helper function to download image as buffer
-async function downloadImage(url: string): Promise<Buffer> {
+// Helper function to infer content type for uploads
+function inferContentType(fileName: string, format: string): string {
+    if (format !== 'original') {
+        return `image/${format}`;
+    }
+
+    const extension = extname(fileName).toLowerCase();
+    const contentTypeMap: Record<string, string> = {
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.png': 'image/png',
+        '.webp': 'image/webp',
+        '.gif': 'image/gif',
+        '.svg': 'image/svg+xml',
+        '.avif': 'image/avif',
+        '.pdf': 'application/pdf',
+        '.mp4': 'video/mp4',
+        '.webm': 'video/webm',
+        '.mp3': 'audio/mpeg',
+        '.wav': 'audio/wav'
+    };
+
+    return contentTypeMap[extension] ?? 'application/octet-stream';
+}
+
+// Helper function to extract filename from URL
+function extractFileNameFromUrl(url: string): string {
+    try {
+        const parsedUrl = new URL(url);
+        const candidate = basename(parsedUrl.pathname);
+        return candidate ? decodeURIComponent(candidate) : 'media';
+    } catch {
+        const fallback = url.split('/').pop();
+        return fallback && fallback.length > 0 ? fallback : 'media';
+    }
+}
+
+// Helper function to extract filename from local path
+function extractFileNameFromLocalPath(localPath: string): string {
+    const candidate = basename(localPath);
+    return candidate.length > 0 ? candidate : 'media';
+}
+
+// Helper function to download media from URL
+async function downloadMedia(url: string): Promise<Buffer> {
     const response = await fetch(url);
     if (!response.ok) {
-        throw new McpError(ErrorCode.InternalError, `Failed to download image: ${response.statusText}`);
+        throw new McpError(ErrorCode.InternalError, `Failed to download media: ${response.statusText}`);
     }
     return Buffer.from(await response.arrayBuffer());
 }
 
+// Helper function to read local media file
+async function readLocalMedia(localPath: string): Promise<Buffer> {
+    try {
+        const fileStat = await stat(localPath);
+        if (!fileStat.isFile()) {
+            throw new McpError(ErrorCode.InvalidParams, `localPath must point to a file: ${localPath}`);
+        }
+    } catch (error) {
+        if (error instanceof McpError) {
+            throw error;
+        }
+
+        throw new McpError(
+            ErrorCode.InvalidParams,
+            `Failed to access local media path: ${localPath}`
+        );
+    }
+
+    try {
+        return await readFile(localPath);
+    } catch {
+        throw new McpError(
+            ErrorCode.InternalError,
+            `Failed to read local media file: ${localPath}`
+        );
+    }
+}
+
 // Helper function to process image with Sharp
 async function processImage(buffer: Buffer, format: string, quality: number): Promise<Buffer> {
+    if (format === 'original') {
+        return buffer;
+    }
+
     let sharpInstance = sharp(buffer);
 
-    if (format !== 'original') {
-        switch (format) {
-            case 'jpeg':
-                sharpInstance = sharpInstance.jpeg({ quality });
-                break;
-            case 'png':
-                // PNG quality is 0-100 for zlib compression level
-                sharpInstance = sharpInstance.png({
-                    compressionLevel: Math.floor((100 - quality) / 100 * 9)
-                });
-                break;
-            case 'webp':
-                sharpInstance = sharpInstance.webp({ quality });
-                break;
-        }
+    switch (format) {
+        case 'jpeg':
+            sharpInstance = sharpInstance.jpeg({ quality });
+            break;
+        case 'png':
+            // PNG quality is 0-100 for zlib compression level
+            sharpInstance = sharpInstance.png({
+                compressionLevel: Math.floor((100 - quality) / 100 * 9)
+            });
+            break;
+        case 'webp':
+            sharpInstance = sharpInstance.webp({ quality });
+            break;
     }
 
     return sharpInstance.toBuffer();
 }
 
 // Update uploadMedia with server config and authorization check
-async function uploadMedia(serverName: string, imageBuffer: Buffer, fileName: string, format: string, metadata?: Record<string, any>, userAuthorized: boolean = false, requestId?: string): Promise<any> {
+async function uploadMedia(serverName: string, mediaBuffer: Buffer, fileName: string, format: string, metadata?: Record<string, any>, userAuthorized: boolean = false, requestId?: string): Promise<any> {
     // Check for explicit user authorization for this upload operation
     if (!userAuthorized) {
         throw new McpError(
@@ -1161,9 +1430,9 @@ async function uploadMedia(serverName: string, imageBuffer: Buffer, fileName: st
     }
 
     // Add the file
-    formData.append('files', imageBuffer, {
+    formData.append('files', mediaBuffer, {
         filename: fileName,
-        contentType: `image/${format === 'original' ? 'jpeg' : format}` // Default to jpeg for original
+        contentType: inferContentType(fileName, format)
     });
 
     // Add metadata if provided
@@ -1180,7 +1449,7 @@ async function uploadMedia(serverName: string, imageBuffer: Buffer, fileName: st
         fileName,
         format,
         hasMetadata: !!metadata,
-        bufferSize: imageBuffer.length,
+        bufferSize: mediaBuffer.length,
         userAuthorized
     });
     
@@ -1423,12 +1692,49 @@ strapi_rest sends one HTTP request at a time. For multiple records, send one POS
             },
             {
                 name: "strapi_upload_media",
-                description: `Upload media to Strapi's media library from a URL with format conversion, quality control, and metadata options. IMPORTANT: This is a write operation that REQUIRES explicit user authorization via the userAuthorized parameter.
+                                description: `Upload media to Strapi's media library from either a remote URL or a local file path, with optional format conversion, quality control, and metadata options. IMPORTANT: This is a write operation that REQUIRES explicit user authorization via the userAuthorized parameter.
+
+## Parameter Rules
+- server: Required. Must match a configured server name.
+- source: Provide exactly one of url or localPath.
+- url: HTTP/HTTPS remote media source.
+- localPath: Existing readable file path on the MCP server host machine.
+- format: jpeg | png | webp | original.
+- quality: 1-100, used only when format is not original.
+- metadata: Optional Strapi fileInfo fields (name, caption, alternativeText, description).
+- userAuthorized: Must be true for this write operation.
+
+## Source Selection
+- Use url when media is already hosted remotely.
+- Use localPath when media exists on local disk.
+- Do not pass both fields, and do not omit both fields.
 
 ## Upload Steps
-1. Upload via strapi_upload_media with URL and metadata
+1. Upload via strapi_upload_media using exactly one source: url or localPath
 2. Get image ID from response
 3. Link to content using strapi_rest PUT request
+
+## Input Examples
+Upload from local file:
+{
+    "server": "product",
+    "localPath": "/Users/you/assets/cover.svg",
+    "format": "original",
+    "metadata": {
+        "name": "cover.svg",
+        "alternativeText": "Wallet security cover image"
+    },
+    "userAuthorized": true
+}
+
+Upload from URL:
+{
+    "server": "product",
+    "url": "https://example.com/image.png",
+    "format": "webp",
+    "quality": 85,
+    "userAuthorized": true
+}
 
 ## Linking Images to Content (Strapi v5)
 After upload, use PUT request to link:
@@ -1440,24 +1746,38 @@ After upload, use PUT request to link:
 }`,
                 inputSchema: {
                     ...zodToJsonSchema(ToolSchemas.strapi_upload_media),
+                    oneOf: [
+                        {
+                            required: ["url"],
+                            not: { required: ["localPath"] }
+                        },
+                        {
+                            required: ["localPath"],
+                            not: { required: ["url"] }
+                        }
+                    ],
                     properties: {
                         ...zodToJsonSchema(ToolSchemas.strapi_upload_media).properties,
                         server: {
                             ...zodToJsonSchema(ToolSchemas.strapi_upload_media).properties.server,
-                            description: "The name of the server to connect to"
+                            description: "Required. Name of the target server from your MCP config (for example: 'product')."
                         },
                         url: {
                             ...zodToJsonSchema(ToolSchemas.strapi_upload_media).properties.url,
-                            description: "URL of the image to upload"
+                            description: "Optional remote source URL (http/https). Mutually exclusive with localPath. The file name is inferred from the URL path when possible."
+                        },
+                        localPath: {
+                            ...zodToJsonSchema(ToolSchemas.strapi_upload_media).properties.localPath,
+                            description: "Optional local filesystem path to upload from disk. Mutually exclusive with url. Must point to an existing readable file on the MCP host machine."
                         },
                         format: {
                             ...zodToJsonSchema(ToolSchemas.strapi_upload_media).properties.format,
-                            description: "Target format for the image. Use 'original' to keep the source format.",
+                            description: "Output format. Use 'original' to keep source bytes unchanged, or jpeg/png/webp to convert with Sharp before upload.",
                             default: "original"
                         },
                         quality: {
                             ...zodToJsonSchema(ToolSchemas.strapi_upload_media).properties.quality,
-                            description: "Image quality (1-100). Only applies when converting formats.",
+                            description: "Quality level from 1 to 100. Applies only when format is jpeg/png/webp; ignored when format is original.",
                             default: 80
                         },
                         metadata: {
@@ -1465,26 +1785,26 @@ After upload, use PUT request to link:
                             properties: {
                                 name: {
                                     type: "string",
-                                    description: "Name of the file"
+                                    description: "Optional display name shown in Strapi media library."
                                 },
                                 caption: {
                                     type: "string",
-                                    description: "Caption for the image"
+                                    description: "Optional caption text stored with the media entry."
                                 },
                                 alternativeText: {
                                     type: "string",
-                                    description: "Alternative text for accessibility"
+                                    description: "Optional alt text for accessibility and SEO."
                                 },
                                 description: {
                                     type: "string",
-                                    description: "Detailed description of the image"
+                                    description: "Optional detailed description field in Strapi media metadata."
                                 }
                             },
                             additionalProperties: false
                         },
                         userAuthorized: {
                             ...zodToJsonSchema(ToolSchemas.strapi_upload_media).properties.userAuthorized,
-                            description: "REQUIRED for media upload operations. Client MUST obtain explicit user authorization before setting this to true.",
+                            description: "Required for upload. Must be true after explicit user confirmation; false will be rejected by validation/security checks.",
                             default: false
                         }
                     }
@@ -1687,17 +2007,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         } else if (name === "strapi_upload_media") {
             // Validate input using Zod (includes authorization check)
             const validatedArgs = validateToolInput("strapi_upload_media", args, requestId);
-            const { server, url, format, quality, metadata, userAuthorized } = validatedArgs;
+            const { server, url, localPath, format, quality, metadata, userAuthorized } = validatedArgs;
             logger.startRequest(requestId, name, server);
 
-            // Extract filename from URL
-            const fileName = url.split('/').pop() || 'image';
+            let fileName: string;
+            let mediaBuffer: Buffer;
 
-            // Download the image
-            const imageBuffer = await downloadImage(url);
+            if (url) {
+                fileName = extractFileNameFromUrl(url);
+                mediaBuffer = await downloadMedia(url);
+            } else if (localPath) {
+                fileName = extractFileNameFromLocalPath(localPath);
+                mediaBuffer = await readLocalMedia(localPath);
+            } else {
+                throw new McpError(
+                    ErrorCode.InvalidParams,
+                    "Provide exactly one source: either url or localPath"
+                );
+            }
 
             // Process the image if format conversion is requested
-            const processedBuffer = await processImage(imageBuffer, format, quality);
+            const processedBuffer = await processImage(mediaBuffer, format, quality);
 
             // Upload to Strapi with metadata (with authorization check)
             const data = await uploadMedia(server, processedBuffer, fileName, format, metadata, userAuthorized, requestId);
