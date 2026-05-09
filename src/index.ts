@@ -497,6 +497,46 @@ const GetComponentsSchema = z.object({
 }).strict();
 
 // Schema for strapi_rest tool
+const REST_BODY_FILE_POINTER_KEY = "__mcpRestBodyFilePath";
+
+function parseRestBodyStringInput(str: string, ctx: z.RefinementCtx): Record<string, any> {
+    const trimmed = str.trim();
+
+    if (trimmed.startsWith('@')) {
+        const localPath = trimmed.slice(1).trim();
+        if (!localPath) {
+            ctx.addIssue({
+                code: "custom",
+                message: "Body file pointer must include a path after '@'. Example: '@/tmp/payload.json'."
+            });
+            return z.NEVER;
+        }
+
+        return {
+            [REST_BODY_FILE_POINTER_KEY]: localPath
+        };
+    }
+
+    try {
+        const parsed = JSON.parse(str);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            ctx.addIssue({
+                code: "custom",
+                message: "Body JSON string must parse to an object (not array/null)."
+            });
+            return z.NEVER;
+        }
+
+        return parsed as Record<string, any>;
+    } catch {
+        ctx.addIssue({
+            code: "custom",
+            message: "Body must be one of: an object, a JSON string object, or a file pointer string like '@/tmp/payload.json'."
+        });
+        return z.NEVER;
+    }
+}
+
 const RestSchema = z.object({
     server: z.string().min(1, "Server name is required and cannot be empty"),
     endpoint: z.string()
@@ -526,17 +566,7 @@ const RestSchema = z.object({
     ]).optional(),
     body: z.union([
         z.record(z.string(), z.any()),
-        z.string().transform((str, ctx) => {
-            try {
-                return JSON.parse(str);
-            } catch (e) {
-                ctx.addIssue({
-                    code: "custom",
-                    message: "Body must be either a JSON object or a JSON string that parses to an object. File-path shortcuts like '@/tmp/payload.json' are not supported."
-                });
-                return z.NEVER;
-            }
-        })
+        z.string().transform((str, ctx) => parseRestBodyStringInput(str, ctx))
     ]).optional(),
     userAuthorized: z.union([
         z.boolean(),
@@ -1379,6 +1409,70 @@ async function readLocalMedia(localPath: string): Promise<Buffer> {
     }
 }
 
+// Helper function to resolve strapi_rest body when using @file-pointer input
+async function resolveRestBodyInput(body?: Record<string, any>, requestId?: string): Promise<Record<string, any> | undefined> {
+    if (!body) {
+        return undefined;
+    }
+
+    const filePathPointer = body[REST_BODY_FILE_POINTER_KEY];
+    if (typeof filePathPointer !== 'string' || Object.keys(body).length !== 1) {
+        return body;
+    }
+
+    const localPath = filePathPointer;
+
+    logger.debug(`Resolving strapi_rest body from file pointer`, {
+        requestId,
+        localPath
+    });
+
+    try {
+        const fileStat = await stat(localPath);
+        if (!fileStat.isFile()) {
+            throw new McpError(ErrorCode.InvalidParams, `Body file pointer must reference a file: ${localPath}`);
+        }
+    } catch (error) {
+        if (error instanceof McpError) {
+            throw error;
+        }
+
+        throw new McpError(
+            ErrorCode.InvalidParams,
+            `Failed to access body file path: ${localPath}`
+        );
+    }
+
+    let fileContent: string;
+    try {
+        fileContent = await readFile(localPath, 'utf-8');
+    } catch {
+        throw new McpError(
+            ErrorCode.InternalError,
+            `Failed to read body file: ${localPath}`
+        );
+    }
+
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(fileContent);
+    } catch {
+        throw new McpError(
+            ErrorCode.InvalidParams,
+            `Body file must contain valid JSON: ${localPath}`
+        );
+    }
+
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new McpError(
+            ErrorCode.InvalidParams,
+            `Body file JSON must be an object (not array/null): ${localPath}`
+        );
+    }
+
+    return parsed as Record<string, any>;
+}
+
 // Helper function to process image with Sharp
 async function processImage(buffer: Buffer, format: string, quality: number): Promise<Buffer> {
     if (format === 'original') {
@@ -1614,15 +1708,16 @@ body: {
 }
 
 ## Request Body Input Rules (CRITICAL)
-- body accepts only:
+- body accepts:
     - a JSON object (recommended)
     - a JSON string that parses to an object
-- body does NOT accept file path pointers such as '@/tmp/payload.json' or './payload.json'
-- If body data is stored in a file, read the file content first and pass parsed JSON
+    - a file pointer string like '@/tmp/payload.json' or '@./payload.json'
+- For @file pointers, the server reads the file and parses it as JSON
+- The file content must parse to a JSON object (not array/null)
 
 Invalid body example:
 {
-        body: '@/tmp/payload.json'
+        body: 'not-json'
 }
 
 Valid body example (object):
@@ -1637,6 +1732,11 @@ Valid body example (object):
 Valid body example (JSON string):
 {
         body: '{"data":{"title":"Example Title"}}'
+}
+
+Valid body example (file pointer):
+{
+    body: '@/tmp/payload.json'
 }
 
 Write example:
@@ -1706,7 +1806,7 @@ strapi_rest sends one HTTP request at a time. For multiple records, send one POS
                         },
                         body: {
                             ...zodToJsonSchema(ToolSchemas.strapi_rest).properties.body,
-                            description: "Request body for POST/PUT requests. Accepted types: (1) object, or (2) JSON string that parses to an object. Not supported: file-path pointers such as '@/tmp/payload.json'. If body data is in a file, read the file content and pass parsed JSON. For components, use: { data: { componentName: { field: 'value' } } } for single components or { data: { componentName: [{ field: 'value' }] } } for repeatable components."
+                            description: "Request body for POST/PUT requests. Accepted types: (1) object, (2) JSON string that parses to an object, or (3) file pointer string like '@/tmp/payload.json' (server reads and parses file JSON). File content must be a JSON object. For components, use: { data: { componentName: { field: 'value' } } } for single components or { data: { componentName: [{ field: 'value' }] } } for repeatable components."
                         },
                         userAuthorized: {
                             ...zodToJsonSchema(ToolSchemas.strapi_rest).properties.userAuthorized,
@@ -2021,7 +2121,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             const { server, endpoint, method, params, body, userAuthorized } = validatedArgs;
             logger.startRequest(requestId, name, server);
 
-            const data = await makeRestRequest(server, endpoint, method, params, body, userAuthorized, requestId);
+            const resolvedBody = await resolveRestBodyInput(body, requestId);
+            const data = await makeRestRequest(server, endpoint, method, params, resolvedBody, userAuthorized, requestId);
             result = {
                 content: [
                     {

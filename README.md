@@ -230,6 +230,30 @@ Write-operation notes:
 - `strapi_rest` sends one HTTP request at a time; if you need to create many records, send one POST per record unless your Strapi project exposes a custom bulk endpoint
 - For Strapi v5, prefer `documentId` over numeric IDs when updating or deleting existing entries
 
+Request body input rules for `strapi_rest`:
+
+- `body` accepts either:
+  - a JSON object
+  - a JSON string that parses to an object
+  - a file pointer string like `@/tmp/payload.json` or `@./payload.json`
+- For `@file` input, the server reads the local file and parses it as JSON
+- The parsed file content must be a JSON object (not array/null)
+
+Example using `@file` body input:
+
+```javascript
+strapi_rest({
+  server: "myserver",
+  endpoint: "api/articles/some-document-id",
+  method: "PUT",
+  params: {
+    status: "draft",
+  },
+  body: "@/tmp/article-update.json",
+  userAuthorized: true,
+});
+```
+
 ### Media Upload
 
 ```javascript
